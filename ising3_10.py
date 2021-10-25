@@ -71,6 +71,75 @@ def opt_type(type, cond=None, default_value=None):
     return ret_value
 
 
+# Numba Functions: Optimized Functions
+
+# TODO: Optimize when Numba works in python3.10, Lv5
+
+def validate_grid(arr: np.ndarray) -> bool:
+    """
+    validate_grid Checks that the given grid is correct.
+    Args:
+        arr (np.ndarray): grid of values.
+    Returns:
+        bool: True if correct.
+    """
+    for x in arr.ravel():
+        if np.abs(x) != 1:
+            return False
+    return True
+
+
+# NOTE: I don't know the inner workings of Numba but I would guess that
+# the performance will be affected by a function calling other functions
+# and so on.
+# HACK: For this reason, I'll do one f to get the end result
+# TODO: Optimize when Numba works in python3.10, Lv0
+
+def get_flip_nmb(lattice: 'Lattice', flip: tuple, i:int, j:int) -> bool:
+    """
+    get_flip_nmb Gives us the spin-flip.
+    Args:
+        lattice (Lattice): Lattice Object.
+        flip (tuple): Tuple of possible outcomes.
+            flip[:3] -> dE <= 0 => Flip.
+            flip[4:] -> dE > 0 => Compare against rng.
+        i (int): Row Index of 2D 'np.ndarray'.
+        j (int): Column Index of 2D 'np.ndarray'.
+    Returns:
+        bool: If 'True' the spin flips, else it doesn't.
+    """
+    rs = lattice.random_state
+    rng = np.random.default_rng(rs)
+    # each (i, j) pair has 4 nearest neighbors.
+    neighbors_indices = (
+        np.mod((i+1, j), lattice.size),
+        np.mod((i-1, j), lattice.size),
+        np.mod((i, j-1), lattice.size),
+        np.mod((i, j+1), lattice.size)
+    )
+    # the difference in energy between one state and the other is given by
+    # s_i := spin to be flipped, s_j := neighbor spins
+    # dE = (sum_<ij> J*(-s_i)*s_j) - (sum_<ij> J*s_i*s_j)
+    # dE = -2*J*(sum_<ij> s_i*s_j) = -2*J*s_i*sum(neighbors_of_s_i())
+    # dE = -2*J*s_i*neigbors_contrib
+    neighbors_contrib = 0
+    for ids in neighbors_indices:
+        # each neighbor can be accessed in parallel.
+        neighbors_contrib += lattice.grid[ids[0], ids[1]]
+    # print(neighbors_contrib)
+    # dE = -2*1*lattice.grid[i,j]*neighbors_contrib
+    # print(f'Diff Energy: {dE}')
+    # TRICK: the possible values of dE \in -2*J*[-4,-2,0,+2,+4] so
+    # dE/(8*J) -> [-2,-1,0,+1,+2] and
+    # .+2 -> [0,1,2,3,4] that can index a list of results.
+    # For dE <= 0, we FLIP. For dE > 0 we FLIP only if rng() < exp(-dE*b)
+    index_flip = -0.25*lattice.grid[i,j]*neighbors_contrib + 2
+    # print(f'index_flip is : {index_flip} (int) {int(index_flip)}')
+    # index_flip = dE/(8*1) + 2
+    # print(f'index_flip is : {index_flip} (int) {int(index_flip)}')
+    return rng.random() < flip[int(index_flip)]
+
+
 @attr.s
 class Lattice:
     """
@@ -105,29 +174,12 @@ class Lattice:
         """        
         rng = np.random.default_rng(self.random_state)
         self.grid = 2*rng.binomial(1, p=self.p, size=[self.size]*2)-1
-    
-    # TODO: Optimize when Numba works in python3.10, Lv5
-    @staticmethod
-    def validate_grid(arr: np.ndarray) -> bool:
-        """
-        validate_grid Checks that the given grid is correct.
-
-        Args:
-            arr (np.ndarray): grid of values.
-
-        Returns:
-            bool: True if correct.
-        """        
-        for x in arr.ravel():
-            if np.abs(x) != 1:
-                return False
-        return True
 
     def __attrs_post_init__(self) -> None:
         if self.grid is None:
             self.generate_grid()
         else:
-            assert self.validate_grid(self.grid), \
+            assert validate_grid(self.grid), \
                 "Values of spin must be +1 or -1 ."
 
 
@@ -158,25 +210,44 @@ class Ising:
     temp: num | None = attr.ib(**opt_type(num, gtzero, default_params['temp']))
     inter: num | None = attr.ib(**opt_type(num, None, default_params['inter']))
 
+    def __attrs_post_init__(self):
+        k = 8.617e-5 # eV/K
+        self.beta = 1/(k*self.temp)
+        # That's a surprise tool that will help us later:
+        exp2 = np.exp(-2*np.abs(self.inter)*2*self.beta)
+        exp4 = np.exp(-2*np.abs(self.inter)*4*self.beta)
+        self.flip = (True, True, True, exp2, exp4)
     
-    # TODO: Optimize when Numba works in python3.10, Lv5
+    # TODO: Optimize when Numba works in python3.10, Lv1
     @staticmethod
-    def get_neighbors(lattice: Lattice, i: int, j: int):
-        above_point = np.mod((i+1, j), lattice.size)
-        below_point = np.mod((i-1, j), lattice.size)
-        left_point = np.mod((i, j-1), lattice.size)
-        right_point = np.mod((i, j+1), lattice.size)
-        return (above_point, below_point, left_point, right_point)
-        
-    @staticmethod
-    def get_energy(lattice: Lattice, i:int, j:int, inter: num):
-        spin_flip_contrib = -2*lattice.grid[i,j]
-        neighbors_contrib = 0
-        neighbors = get_neighbors()
-        for point in :
-            neighbors_contrib += lattice.grid[*point]
-        diff_energy = spin_flip_contrib*neighbors_contrib
-        pass
+    def update_grid_nmb(lattice: Lattice, flip: tuple, points:list) -> None:
+        for point in points:
+            if get_flip_nmb(lattice, flip, point[0], point[1]):
+                lattice.grid[point[0], point[1]] *= -1
+
+    def update_grid(self, points:list) -> None:
+        self.update_grid_nmb(self.lattice, self.flip, points)
+
+    # TODO: Optimize when Numba works in python3.10, Lv1
+    # NOTE: Not bad, just not going to use them as they are rn.
+    # @staticmethod
+    # def get_neighbors(lattice: Lattice, i: int, j: int):
+    #     above_point = np.mod((i+1, j), lattice.size)
+    #     below_point = np.mod((i-1, j), lattice.size)
+    #     left_point = np.mod((i, j-1), lattice.size)
+    #     right_point = np.mod((i, j+1), lattice.size)
+    #     return (above_point, below_point, left_point, right_point)
+    # TODO: Optimize when Numba works in python3.10, Lv1
+    # NOTE: Not bad, just not going to use them as they are rn.
+    # @staticmethod
+    # def get_energy(lattice: Lattice, i:int, j:int, inter: num):
+    #     spin_flip_contrib = -2*lattice.grid[i,j]
+    #     neighbors_contrib = 0
+    #     neighbors = get_neighbors()
+    #     for point in :
+    #         neighbors_contrib += lattice.grid[*point]
+    #     diff_energy = spin_flip_contrib*neighbors_contrib
+    #     pass
 
 def main() -> None:
     pass
