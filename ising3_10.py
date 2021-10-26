@@ -18,14 +18,21 @@ python3.10. Priority of updates should follow the next rule:
 
 __version__ = "0.1.0"
 
+import sys
 import attr
-from checks import instance_of
+import json
 import numpy as np
 
+from typing import Callable
+from collections import deque
+from checks import instance_of
 from rich import print
 
+# num is a type that is either int or float
 num = int | float
-
+# strat is the type of strategy, a callable whose input is a np.ndarray
+# and returns a list of (i,j) pairs
+strat = Callable[[np.ndarray, int], list[np.ndarray]]
 
 # Validators: They check the inputs.
 
@@ -34,14 +41,14 @@ def gtzero(instance, attribute, value):
     gtzero Validator: checks greather than zero
     """    
     if value <= 0:
-        raise ValueError(f'{attribute.name} must be positive & non-zero.')
+        raise ValueError(f'{attribute.file} must be positive & non-zero.')
 
 def gele(instance, attribute, value):
     """
     gele Validator: checks geq than zero or leq than one
     """    
     if value < 0 or value > 1:
-        raise ValueError(f'{attribute.name} must be between [0,1].')
+        raise ValueError(f'{attribute.file} must be between [0,1].')
 
 def opt_type(type, cond=None, default_value=None):
     """
@@ -140,6 +147,7 @@ def get_flip_nmb(lattice: 'Lattice', flip: tuple, i:int, j:int) -> bool:
     return rng.random() < flip[int(index_flip)]
 
 
+
 @attr.s
 class Lattice:
     """
@@ -190,6 +198,7 @@ default_params = {
     'inter': 1
 }
 
+
 @attr.s
 class Ising:
     """
@@ -205,10 +214,13 @@ class Ising:
             Defaults to default_params['temp']
         inter (num, optional): Interaction J.
             Defaults to default_params['inter']
+        warmstart (str, optional): filepath to previous runs.
+            Defaults to None
     """    
     lattice: Lattice | None = attr.ib(**opt_type(Lattice, None, default_params['lattice']))
     temp: num | None = attr.ib(**opt_type(num, gtzero, default_params['temp']))
     inter: num | None = attr.ib(**opt_type(num, None, default_params['inter']))
+    warmstart: str | None = attr.ib(**opt_type(str))
 
     def __attrs_post_init__(self):
         k = 8.617e-5 # eV/K
@@ -217,16 +229,141 @@ class Ising:
         exp2 = np.exp(-2*np.abs(self.inter)*2*self.beta)
         exp4 = np.exp(-2*np.abs(self.inter)*4*self.beta)
         self.flip = (True, True, True, exp2, exp4)
+        self.start_iteration = 0
+        self.name = 'ising'
+        if self.warmstart:
+            self.load()
     
     # TODO: Optimize when Numba works in python3.10, Lv1
     @staticmethod
     def update_grid_nmb(lattice: Lattice, flip: tuple, points:list) -> None:
         for point in points:
             if get_flip_nmb(lattice, flip, point[0], point[1]):
+                print(f"[green]FLIPPED[/green] at ({point[0], point[1]})")
                 lattice.grid[point[0], point[1]] *= -1
 
     def update_grid(self, points:list) -> None:
         self.update_grid_nmb(self.lattice, self.flip, points)
+
+    # -------------Spin Query Strategies----------------
+    def single(self) -> list[np.ndarray]:
+        """
+        single Single flip dynamics strategy
+
+        Each iteration it will deliver a list of only one pair of (i,j).
+
+        Returns:
+            list[np.ndarray]: List of 1 positions.
+        """
+        rng = np.random.default_rng(self.lattice.random_state)
+        return [rng.integers(low=0, high=self.lattice.grid.shape[0], size=2)]
+
+    def checkerboard(self, checkerboards:tuple) -> list[np.ndarray]:
+        """
+        checkerboard Checkerboard flip strategy.
+
+        Each iteration it will deliver a list of multiple pairs of (i,j).
+        If the random state is even it will choose the first of checkerboards.
+        Else, it will choose the second one.
+        This way all the cells in the Ising Simulation are flipped at least
+        once.
+
+        Args:
+            checkerboards (tuple): Tuple with 2 different checkerboards.
+
+        Returns:
+            list[np.ndarray]: List of pair positions.
+        """        
+        idx = np.mod(self.lattice.random_state,2)
+        # idx = 0 if even , 1 if odd
+        return checkerboards[idx]
+
+    def set_strategy(self, strategy:str) -> None:
+        """
+        set_strategy Sets the strategy at the beggining of the execution.
+
+        Args:
+            strategy (str): file of the strategy
+                Possible strategies are: 'single', 'checkerboard'
+        """        
+        # when numba works in 3.10 change this to match
+        if strategy == 'single':
+            self.strategy = self.single
+        elif strategy == 'checkerboard':
+            size = self.lattice.size
+            cb = (np.indices((size,size)).sum(axis=0) % 2)
+            # Generates a checkerboard pattern, only once
+            checkerboards = (
+                np.transpose(np.where(cb == 0)),
+                np.transpose(np.where(cb == 1))
+            )
+            self.strategy = self.checkerboard(checkerboards)
+        else:
+            raise NotImplementedError(
+                "Possible strategies are: 'single', 'checkerboard'")
+
+    # -------------Save and loading in Las Vegas--------
+    # FIXME: size out of bounds when loading previous, need to override the default grid
+    def load(self):
+        """
+        load Make sure to load the last model.
+
+        Args:
+            field (str): [description]
+        """        
+        file = self.warmstart
+        self.name = file.split('_')[0]
+        with open(self.name+'.json') as read_file:
+            data = json.load(read_file)
+            self.temp = data['temp']
+            self.inter = data['inter']
+            self.beta = data['beta']
+            self.flip = data['flip']
+        self.start_iteration = int(file.split('_')[1])
+        self.lattice.random_state = int(file.split('_')[2])
+        self.lattice.grid = np.load(file+'.npy')
+
+    def save(self, history: deque):
+        # saves the state of the simulation for later.
+
+        parameters = {
+            'temp': self.temp,
+            'inter': self.inter,
+            'beta': self.beta,
+            'flip': self.flip
+        }
+        with open(self.name+'.json', 'w') as outfile:
+            json.dump(parameters, outfile)
+        
+        for h in history:
+            np.save('_'.join([
+                self.name,
+                f'{h[0]}',
+                f'{h[1]}']), 
+                h[2], allow_pickle=False)
+
+    # -------------Execution Phase----------------------
+    def _run(self, strategy:str, max_iter:int, max_len:int):
+        history = deque(maxlen=max_len)
+        self.set_strategy(strategy)
+
+        try:
+            print("[red]START LOOP[/red]")
+            for i in range(self.start_iteration, max_iter+1):
+                print(f"[yellow]GRID[/yellow] at i: {i}")
+                print(self.lattice.grid)
+                history.append((i, self.lattice.random_state, self.lattice.grid))
+                self.update_grid(self.strategy())
+                self.lattice.random_state += 1
+            self.save(history)
+        except KeyboardInterrupt:
+            self.save(history)
+            print("[red]Saved!!![/red]")
+        finally:
+            sys.exit(0)
+
+    
+
 
     # TODO: Optimize when Numba works in python3.10, Lv1
     # NOTE: Not bad, just not going to use them as they are rn.
