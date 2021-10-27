@@ -1,5 +1,7 @@
 """I don't like how the error messages are shown in attrs"""
 
+import attr
+import numpy as np
 from attr._make import attrib, attrs
 
 
@@ -33,3 +35,48 @@ def instance_of(type):
         got.
     """
     return _InstanceOfValidator(type)
+
+
+# Validators: They check the inputs.
+
+def gtzero(instance, attribute, value):
+    """
+    gtzero Validator: checks greather than zero
+    """    
+    if value <= 0:
+        raise ValueError(f'{attribute.name} must be positive & non-zero.')
+
+def gele(instance, attribute, value):
+    """
+    gele Validator: checks geq than zero or leq than one
+    """    
+    if value < 0 or value > 1:
+        raise ValueError(f'{attribute.name} must be between [0,1].')
+
+
+def opt_type(type, cond=None, default_value=None):
+    """
+    opt_type Enforces Optional Type and validates conditions.
+
+    Args:
+        type ([type]): The desired type
+        cond (callable, optional): Condition function. Defaults to None.
+        default_value ([type], optional): The default value. Defaults to None.
+
+    Returns:
+        dict: unpack it in attr.ib
+    """    
+    ret_value = {
+            'validator': [attr.validators.optional(
+                instance_of(type))
+                ],
+            'default': default_value}
+    if cond is not None:
+        ret_value['validator'] = [
+            attr.validators.optional(
+                instance_of(type)
+                ),
+            cond
+        ]
+    
+    return ret_value

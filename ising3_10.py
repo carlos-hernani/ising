@@ -11,9 +11,10 @@ Python Version 3.10 waiting for numba to update.
 
 Added todo's to know where should I update once numba supports
 python3.10. Priority of updates should follow the next rule:
-    Lv 0: Heavily used function, optimize with highest priority.
-    ...
-    Lv 5: Only used once, optimize if nothing else can be.
+
+    - Lv 0: Heavily used function, optimize with highest priority.
+    - ...
+    - Lv 5: Only used once, optimize if nothing else can be.
 """
 
 __version__ = "0.1.0"
@@ -25,7 +26,7 @@ import numpy as np
 
 from typing import Callable
 from collections import deque
-from checks import instance_of
+from checks import instance_of, opt_type, gtzero, gele
 from rich import print
 
 # num is a type that is either int or float
@@ -34,48 +35,7 @@ num = int | float
 # and returns a list of (i,j) pairs
 strat = Callable[[np.ndarray, int], list[np.ndarray]]
 
-# Validators: They check the inputs.
 
-def gtzero(instance, attribute, value):
-    """
-    gtzero Validator: checks greather than zero
-    """    
-    if value <= 0:
-        raise ValueError(f'{attribute.file} must be positive & non-zero.')
-
-def gele(instance, attribute, value):
-    """
-    gele Validator: checks geq than zero or leq than one
-    """    
-    if value < 0 or value > 1:
-        raise ValueError(f'{attribute.file} must be between [0,1].')
-
-def opt_type(type, cond=None, default_value=None):
-    """
-    opt_type Enforces Optional Type and validates conditions.
-
-    Args:
-        type ([type]): The desired type
-        cond (callable, optional): Condition function. Defaults to None.
-        default_value ([type], optional): The default value. Defaults to None.
-
-    Returns:
-        dict: unpack it in attr.ib
-    """    
-    ret_value = {
-            'validator': [attr.validators.optional(
-                instance_of(type))
-                ],
-            'default': default_value}
-    if cond is not None:
-        ret_value['validator'] = [
-            attr.validators.optional(
-                instance_of(type)
-                ),
-            cond
-        ]
-    
-    return ret_value
 
 
 # Numba Functions: Optimized Functions
@@ -112,6 +72,7 @@ def get_flip_nmb(lattice: 'Lattice', flip: tuple, i:int, j:int) -> bool:
             flip[4:] -> dE > 0 => Compare against rng.
         i (int): Row Index of 2D 'np.ndarray'.
         j (int): Column Index of 2D 'np.ndarray'.
+
     Returns:
         bool: If 'True' the spin flips, else it doesn't.
     """
@@ -156,7 +117,9 @@ class Lattice:
     Creates a square lattice of dimensions size x size filled with
     +1 or -1 with a given probability, p, (+1:p, -1:1-p) with a
     random seed.
-    
+
+    $$dist = \\sqrt { a^2+b^2 }$$
+
     Args:
         size (int): number of cells in each direction of the sqaure lattice.
         p (num, optional): probability of value +1. Defaults to 0.5.
@@ -216,10 +179,11 @@ class Ising:
             Defaults to default_params['inter']
         warmstart (str, optional): filepath to previous runs.
             Defaults to None
-    """    
+    """
     lattice: Lattice | None = attr.ib(**opt_type(Lattice, None, default_params['lattice']))
     temp: num | None = attr.ib(**opt_type(num, gtzero, default_params['temp']))
     inter: num | None = attr.ib(**opt_type(num, None, default_params['inter']))
+    name: str | None = attr.ib(**opt_type(str, None, 'ising'))
     warmstart: str | None = attr.ib(**opt_type(str))
 
     def __attrs_post_init__(self):
@@ -315,22 +279,32 @@ class Ising:
         self.name = file.split('_')[0]
         with open(self.name+'.json') as read_file:
             data = json.load(read_file)
-            self.temp = data['temp']
-            self.inter = data['inter']
-            self.beta = data['beta']
-            self.flip = data['flip']
+            self.temp = data['ising']['temp']
+            self.inter = data['ising']['inter']
+            self.beta = data['ising']['beta']
+            self.flip = data['ising']['flip']
+            self.lattice.size = data['lattice']['size']
+            self.lattice.size = data['lattice']['p']
         self.start_iteration = int(file.split('_')[1])
-        self.lattice.random_state = int(file.split('_')[2])
+        self.lattice.random_state = int(file.split('_')[2]) 
         self.lattice.grid = np.load(file+'.npy')
 
     def save(self, history: deque):
         # saves the state of the simulation for later.
 
         parameters = {
-            'temp': self.temp,
-            'inter': self.inter,
-            'beta': self.beta,
-            'flip': self.flip
+            'ising': {
+                'temp': self.temp,
+                'inter': self.inter,
+                'beta': self.beta,
+                'flip': self.flip
+            },
+            'lattice': {
+                'size': self.lattice.size,
+                'p': self.lattice.p,
+                'random_state': self.lattice.random_state
+            }
+            
         }
         with open(self.name+'.json', 'w') as outfile:
             json.dump(parameters, outfile)
