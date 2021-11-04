@@ -284,7 +284,7 @@ class Ising:
             self.beta = data['ising']['beta']
             self.flip = data['ising']['flip']
             self.lattice.size = data['lattice']['size']
-            self.lattice.size = data['lattice']['p']
+            self.lattice.p = data['lattice']['p']
         self.start_iteration = int(file.split('_')[1])
         self.lattice.random_state = int(file.split('_')[2]) 
         self.lattice.grid = np.load(file+'.npy')
